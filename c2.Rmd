@@ -1,0 +1,298 @@
+---
+title: "Survived Titanic Passenger Prediction with NaiveBayes, Decision Tree, and Random Forest"
+author: "Rahma Fairuz Rania"
+date: '2022-07-17'
+output: 
+ html_document:
+   toc: true
+   toc_float: true
+   highlight: zenburn
+   df_print: paged
+   theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+---
+Case : From data titanic passenger, we want to know does passenger still alive or not. Data can be downloaded here https://www.kaggle.com/c/titanic
+
+# Import Data
+
+```{r}
+titanic_train <- read.csv('train.csv')
+titanic_test <- read.csv('test.csv')
+titanic_gender <- read.csv('gender_submission.csv')
+```
+
+# Data Wrangling
+
+To make easier, combine data test and gender into 1 dataframe
+
+```{r, warning=FALSE, message=FALSE}
+library(dplyr)
+titanic_test <- cbind(titanic_test, Survived = titanic_gender$Survived)
+```
+- Check missing value
+
+```{r}
+# data train
+colSums(is.na(titanic_train))
+```
+There's missing in Age column. Instead of delete it, we change the value with mean of age because we want our model learn more.
+
+```{r}
+titanic_train <- titanic_train %>% mutate(Age = if_else(is.na(Age), mean(Age, na.rm = TRUE), Age))
+
+colSums(is.na(titanic_train))
+```
+```{r}
+# data test
+colSums(is.na(titanic_test))
+
+titanic_test <- titanic_test %>% na.omit()
+anyNA(titanic_test)
+```
+- Check structure of data
+
+```{r}
+str(titanic_train)
+```
+
+Here are some information about columns in wholesale data
+* `PassengerId`: Id number of passenger
+* `Survived` : Passenger Survival or Not
+* `Pclass` :  A proxy for socio-economic status (SES). 1st = Upper, 2nd = Middle, 3rd = Lower
+* `Name` : Name of Passenger
+* `Sex` : Sex of Passenger 
+* `Age` : Age of Passenger
+* `SibSp` : Sibling = brother, sister, stepbrother, stepsister; Spouse = husband, wife (mistresses and fiancés were ignored)
+* `Parch` :  Parent = mother, father; Child = daughter, son, stepdaughter, stepson; Some children travelled only with a nanny, therefore parch=0 for them.
+* `Ticket` : Ticket number
+* `Fare` : Passenger fare
+* `Cabin` : Cabin number
+* `Embarked` : Port of Embarkation 
+
+- Change column into right data type and delete some column
+
+```{r}
+titanic_train <- titanic_train %>% select(-c(PassengerId, Name, Ticket, Cabin)) %>% 
+  mutate(Survived = as.factor(Survived),
+         Pclass = as.factor(Pclass),
+         Sex = as.factor(Sex),
+         SibSp = as.factor(SibSp),
+         Parch = as.factor(Parch),
+         Embarked = as.factor(Embarked))
+
+titanic_test <- titanic_test %>% select(-c(PassengerId, Name, Ticket, Cabin)) %>% 
+  mutate(Survived = as.factor(Survived),
+         Pclass = as.factor(Pclass),
+         Sex = as.factor(Sex),
+         SibSp = as.factor(SibSp),
+         Parch = as.factor(Parch),
+         Embarked = as.factor(Embarked))
+```
+
+# Data Pre-processing
+
+- Check class proportion
+
+```{r}
+prop.table(table(titanic_train$Survived))
+```
+Our data still balance but we can make balance proportion with downsampling
+
+```{r, warning=FALSE, message=FALSE}
+RNGkind(sample.kind = "Rounding")
+set.seed(555)
+library(caret)
+titanic_train <- downSample(x = titanic_train %>% 
+                           select(-Survived),
+                          y = titanic_train$Survived,
+                         yname = "Survived") 
+```
+
+
+```{r}
+prop.table(table(titanic_train$Survived))
+```
+Now our data is balance.
+
+# Naive Bayes Model
+
+- Build model with `naiveBayes()` function from library `e1071`
+
+```{r, warning=FALSE, message=FALSE}
+library(e1071)
+titanic_nb <- naiveBayes(Survived ~., titanic_train, laplace = 1)
+titanic_nb
+```
+
+```{r}
+prop.table(table(titanic_train$Survived, titanic_train$Sex), margin = 2)
+```
+> From the class proportion above, female passenger that survive is 81% meanwhile male passenger 27%. Female passenger prioritized.
+
+- Model evaluation
+
+```{r}
+titanic_test$pred <- predict(titanic_nb, titanic_test, type = 'class')
+```
+
+- Evaluation with confusionMatrix from library caret
+
+```{r}
+library(caret)
+confusionMatrix(titanic_test$pred, reference = titanic_test$Survived)
+```
+- ROC model naiveBayes
+
+ROC (Receiver Operating Curve) describe relation between True Positif Rate(TPR) or Recall/Sensitivity and False Positif Rate(FPR) or (1-specificity). Ideal model has TPR > FPR
+Build dataframe ROC, assume positive class is 1(survived).
+
+```{r}
+titanic_test$pred <- predict(titanic_nb, newdata = titanic_test, type = "raw")
+titanic_test$actual <- ifelse(titanic_test$Survived == 1, 'Alive', 'Death')
+```
+
+Build ROC 
+
+```{r, warning=FALSE, message=FALSE}
+library(ROCR)
+
+# objek prediction
+roc_pred <- prediction(predictions = titanic_test$pred[,1], labels = titanic_test$actual)
+
+# ROC curve
+plot(performance(prediction.obj = roc_pred, measure = "tpr", x.measure = "fpr"))
+abline(0,1,lty = 8)
+```
+
+- AUC model naivebayes
+
+After we search for ROC, next we search value under ROC plot with AUC(Area Under Curve).
+
+```{r}
+titanic_auc <- performance(prediction.obj = roc_pred, measure = 'auc')
+titanic_auc@y.values
+```
+our Naive Bayes model is good enough to separate positive(alive) and negative(dead) class.
+
+# Decision Tree
+
+- Check class proportion 
+
+```{r}
+prop.table(table(titanic_train$Survived))
+```
+- Build model with `ctree()` from library `partykit`
+
+```{r, warning=FALSE, message=FALSE}
+library(partykit)
+titanic_tree <- ctree(Survived ~., titanic_train)
+titanic_tree
+```
+For better information, visualize it
+
+```{r}
+plot(titanic_tree, type = 'simple')
+```
+From tree structure above, we can see classification is based on `sex`, `Pclass`, `Fare`, and `Age`. Information of tree :
+```{r}
+
+```
+- Root node (highest level of tree) : Sex, means that gender rescuers consider gender first. This node is very important to determine target.
+- Interior node : Pclass, Fare, Age, SibSp. Second branch used if root is not enough to determine target.
+- Leaf node : [3], [5], [6], [8], [11], [12], [13]. Predict target value.
+
+
+- Model evaluation
+
+```{r}
+# predict data test
+titanic_test_pred <- predict(object = titanic_tree, newdata = titanic_test, type = "response")
+
+# confusion matrix data test
+confusionMatrix(data = titanic_test_pred, reference = titanic_test$Survived, positive = "1")
+```
+
+# Random Forest
+
+For speed up computation, we can delete non-informative variable.
+
+```{r}
+# check non-informative var
+nearZeroVar(titanic_train)
+```
+There's no non-informative so we can use Random Forest for building model.
+
+- Build model with k-fold validation 
+
+```{r, warning=FALSE, message=FALSE}
+library(randomForest)
+set.seed(572)
+ctrl <- trainControl(method = "repeatedcv",
+                    number = 5, # k-fold
+                     repeats = 3) # repeat
+titanic_forest <- train(Survived ~., data = titanic_train, method = 'rf', trControl = ctrl)
+titanic_forest
+```
+Optimum k splitting at each tree node is 11. 
+
+- Check the important variable using varImp()
+
+```{r}
+varImp(titanic_forest)
+```
+
+```{r}
+titanic_forest$finalModel
+```
+
+- Predict random forest model
+
+```{r}
+titanic_forest_pred <- predict(titanic_forest, newdata = titanic_test, type = "raw")
+```
+
+- Model evaluation
+
+```{r}
+confusionMatrix(data = titanic_forest_pred, reference = titanic_test$Survived, positive = "1")
+```
+
+# Conclusion
+
+Naive Bayes model has
+```{r}
+
+```
+
+- 81% accuracy
+- 84% sensitivity
+- 75% specificity
+- 84% precision
+
+
+Decision Tree model has
+```{r}
+
+```
+
+- 81% accuracy
+- 98% sensitivity
+- 71% specificity
+- 67% precision
+
+Random Forest model has
+```{r}
+
+```
+
+- 81% accuracy
+- 85% sensitivity
+- 78% specificity
+- 71% precision
+
+> In this case, we focused on Sensitivity. We want model can predict positive class from the actual is positive. So, Decision Tree is the best model which has highest sensitivity.
